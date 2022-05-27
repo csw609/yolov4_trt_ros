@@ -7,7 +7,9 @@ import rospkg
 
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge	
+from cv_bridge import CvBridge
+from yolov4_trt_ros.msg import BoundingBox
+from yolov4_trt_ros.msg import BoundingBoxes
 
 import queue
 import numpy
@@ -31,7 +33,7 @@ from utils.display import open_window, set_display, show_fps
 from utils.visualization import BBoxVisualization
 from utils.yolo_with_plugins import TrtYOLO
 
-WINDOW_NAME = 'TrtYOLODemo'
+WINDOW_NAME = 'TrtYOLO'
 
 img_queue = queue.Queue()
 
@@ -109,12 +111,35 @@ def loop_and_detect(trt_yolo, conf_th, vis):
         if not img_q.empty():
         #print(type(img))
         #img = numpy.zeros((480,640,3), dtype=numpy.uint8)
-            img = img_q.get()
-            img = numpy.frombuffer(img.data, dtype=numpy.uint8).reshape(img.height, img.width, -1)
+            img_msg = img_q.get()
+            img = numpy.frombuffer(img_msg.data, dtype=numpy.uint8).reshape(img_msg.height, img_msg.width, -1)
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            
             boxes, confs, clss = trt_yolo.detect(img, conf_th)
+            #print(len(boxes))
+            #print(confs)
+            bBoxes = BoundingBoxes()
+            bBoxes.image_header = img_msg.header
+            for i in range(len(boxes)):
+                bBox = BoundingBox()
+                bBox.xmin = boxes[i][0]
+                bBox.ymin = boxes[i][1]
+                bBox.xmax = boxes[i][2]
+                bBox.ymax = boxes[i][3]
+                bBox.Class = "robot"
+                bBox.id = 0
+                bBox.probability = confs[i]
+                bBoxes.bounding_boxes.append(bBox)
+                print("robot detected")
+                print("robot ", i+1)
+                print("probability : ", confs[i])
+                
+            boxPub.publish(bBoxes)
+                        
             img = vis.draw_bboxes(img, boxes, confs, clss)
             img = show_fps(img, fps)
+            print("FPS : ",fps)
+            print("\n")
             image_message = bridge.cv2_to_imgmsg(img, encoding="passthrough")
             pub.publish(image_message)
             cv2.imshow(WINDOW_NAME, img)
@@ -130,83 +155,18 @@ def loop_and_detect(trt_yolo, conf_th, vis):
                 full_scrn = not full_scrn
                 set_display(WINDOW_NAME, full_scrn)
         else:
+            
             print("wait images")
-
-
-class TrtYoloROS:
-    def __init__(self):
-        print("init start")
-        self.pub = rospy.Publisher('detect_image', Image, queue_size=10)
-        self.sub = rospy.Subscriber("/camera/infra1/image", Image, self.imgCallback)
-
-        rospack = rospkg.RosPack()
-        pkgPath = rospack.get_path('yolov4_trt_ros')
-        self.bridge = CvBridge()
-    
-        self.args = parse_args()
-        print(self.args)
-        print(self.args.width)
-        print(self.args.height)
-        #print(pkgPath)
-        if self.args.category_num <= 0:
-            raise SystemExit('ERROR: bad category_num (%d)!' % self.args.category_num)
-        #if not os.path.isfile('/../weights/%s.trt' % args.model):
-        if not os.path.isfile(pkgPath + '/weights/%s.trt' % self.args.model):
-            raise SystemExit('ERROR: file (%s.trt) not found!' % self.args.model)
-
-        self.cam = Camera(self.args)
-        if not self.cam.isOpened():
-            raise SystemExit('ERROR: failed to open camera!')
-
-        cls_dict = get_cls_dict(self.args.category_num)
-        self.vis = BBoxVisualization(cls_dict)
-        self.trt_yolo = TrtYOLO(self.args.model, self.args.category_num, self.args.letter_box)
-
-        open_window(
-            WINDOW_NAME, 'Camera TensorRT YOLO Demo',
-            640, 480)
-        self.fps = 0.0
-        self.tic = time.time()
-        print("init end")
-        #loop_and_detect(cam, trt_yolo, args.conf_thresh, vis=vis)
-
-        #cam.release()
-        #cv2.destroyAllWindows()
-
-    # def imgCallback(self, img_msg):
-    #     print("image received")
-
-    #     img = numpy.frombuffer(img_msg.data, dtype=numpy.uint8).reshape(img_msg.height, img_msg.width, -1)
-    #     #img = self.bridge.imgmsg_to_cv2(img_msg, "mono8")
-    #     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) 
-    #     #print(type(img))
-    #     #img = numpy.zeros((480,640,3), dtype=numpy.uint8)
-
-    #     boxes, confs, clss = self.trt_yolo.detect(img, self.args.conf_thresh)
-    #     print("hi")
-    #     img = self.vis.draw_bboxes(img, boxes, confs, clss)
-    #     img = show_fps(img, self.fps)
-    #     image_message = self.bridge.cv2_to_imgmsg(img, encoding="passthrough")
-    #     #self.pub.publish(image_message)
-    #     cv2.imshow(WINDOW_NAME, img)
-    #     self.toc = time.time()
-    #     curr_fps = 1.0 / (self.toc - self.tic)
-    #     # calculate an exponentially decaying average of fps number
-    #     fps = curr_fps if fps == 0.0 else (fps*0.95 + curr_fps*0.05)
-    #     self.tic = self.toc
-    #     key = cv2.waitKey(1)
 
 def imgCallback(img_msg):
     img_q.put(img_msg)
 
 if __name__ == '__main__':
-
-    #trt_node = TrtYoloROS()
-
     img_q = queue.Queue()
     bridge = CvBridge()
     
     sub = rospy.Subscriber("/camera/infra1/image", Image, imgCallback)
+    boxPub = rospy.Publisher('/bounding_boxes',BoundingBoxes, queue_size=10)
     pub = rospy.Publisher('detect_image', Image, queue_size=10)
     rospy.init_node('trt_yolo', anonymous=True)
 
